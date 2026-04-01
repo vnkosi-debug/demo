@@ -47,6 +47,15 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
     print("ReportLab not available. Install with: pip install reportlab")
 
+try:
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+    print("python-pptx not available. Install with: pip install python-pptx")
+
 class ProtocolBase:
     """Base class for all protocols with common validation and serialization."""
     def validate(self) -> bool:
@@ -581,9 +590,10 @@ def create_presentation_from_protocols(slides: Dict[str, Any], output_file: str)
     """Create actual PPTX presentation using the generated content."""
     print(f"📊 Creating presentation: {output_file}")
 
-    # For now, create a simple text-based presentation file
-    # In a real implementation, you'd use python-pptx library
-    content = f"""# {slides['title_slide']['title']}
+    if not PPTX_AVAILABLE:
+        print("❌ python-pptx not available, creating markdown file instead")
+        # Fallback to markdown
+        content = f"""# {slides['title_slide']['title']}
 
 ## {slides['title_slide']['subtitle']}
 
@@ -617,12 +627,59 @@ This presentation was generated using:
 
 Generated at: {datetime.now().isoformat()}
 """
+        with open(output_file.replace('.pptx', '.md'), 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"✅ Presentation content saved as: {output_file.replace('.pptx', '.md')}")
+        return
 
-    # Save as markdown (can be converted to PPTX later)
-    with open(output_file.replace('.pptx', '.md'), 'w', encoding='utf-8') as f:
-        f.write(content)
+    # Create presentation
+    prs = Presentation()
 
-    print(f"✅ Presentation content saved as: {output_file.replace('.pptx', '.md')}")
+    # Title slide
+    title_slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(title_slide_layout)
+    title = slide.shapes.title
+    subtitle = slide.placeholders[1]
+
+    title.text = slides['title_slide']['title']
+    subtitle.text = slides['title_slide']['subtitle']
+
+    # Content slide 1
+    bullet_slide_layout = prs.slide_layouts[1]
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    shapes = slide.shapes
+
+    title_shape = shapes.title
+    body_shape = shapes.placeholders[1]
+
+    title_shape.text = slides['content_slide_1']['title']
+    tf = body_shape.text_frame
+    tf.text = slides['content_slide_1']['bullets'][0].lstrip('• ')
+
+    for bullet in slides['content_slide_1']['bullets'][1:]:
+        p = tf.add_paragraph()
+        p.text = bullet.lstrip('• ')
+        p.level = 0
+
+    # Content slide 2
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    shapes = slide.shapes
+
+    title_shape = shapes.title
+    body_shape = shapes.placeholders[1]
+
+    title_shape.text = slides['content_slide_2']['title']
+    tf = body_shape.text_frame
+    tf.text = slides['content_slide_2']['bullets'][0].lstrip('• ')
+
+    for bullet in slides['content_slide_2']['bullets'][1:]:
+        p = tf.add_paragraph()
+        p.text = bullet.lstrip('• ')
+        p.level = 0
+
+    # Save the presentation
+    prs.save(output_file)
+    print(f"✅ PowerPoint presentation saved as: {output_file}")
 
 def create_pdf_report(content_agent: Agent, analysis_results: Dict[str, Any], output_file: str):
     """Create PDF report from analysis results."""
