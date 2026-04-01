@@ -19,6 +19,8 @@ python T.PY demo                  # Run the protocol demonstration
 python T.PY web                   # Start web interface
 """
 
+from __future__ import annotations
+
 import json
 import time
 import os
@@ -208,6 +210,72 @@ class Agent:
 if FLASK_AVAILABLE:
     app = Flask(__name__)
 
+    JOBS: Dict[str, Dict[str, Any]] = {}
+    JOB_LOCK = None
+    try:
+        import threading
+        import uuid
+        JOB_LOCK = threading.Lock()
+    except Exception:
+        threading = None
+        uuid = None
+
+    def _capture_output(callable_fn, *args, **kwargs) -> str:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            callable_fn(*args, **kwargs)
+        return buffer.getvalue()
+
+    def _run_job(job_id: str, action_label: str, callable_fn, *args, **kwargs):
+        with JOB_LOCK:
+            JOBS[job_id]["status"] = "running"
+            JOBS[job_id]["started_at"] = datetime.now().isoformat()
+
+        try:
+            output = _capture_output(callable_fn, *args, **kwargs)
+            with JOB_LOCK:
+                JOBS[job_id]["status"] = "completed"
+                JOBS[job_id]["output"] = output
+                JOBS[job_id]["finished_at"] = datetime.now().isoformat()
+        except Exception as exc:
+            with JOB_LOCK:
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["error"] = str(exc)
+                JOBS[job_id]["finished_at"] = datetime.now().isoformat()
+
+    def _create_job(action_label: str, callable_fn, *args, **kwargs) -> str:
+        if threading is None or uuid is None or JOB_LOCK is None:
+            raise RuntimeError("Threading support is not available in this runtime")
+
+        job_id = uuid.uuid4().hex
+        with JOB_LOCK:
+            JOBS[job_id] = {
+                "id": job_id,
+                "action": action_label,
+                "status": "queued",
+                "created_at": datetime.now().isoformat(),
+                "started_at": None,
+                "finished_at": None,
+                "output": "",
+                "error": None,
+            }
+
+        worker = threading.Thread(
+            target=_run_job,
+            args=(job_id, action_label, callable_fn, *args),
+            kwargs=kwargs,
+            daemon=True,
+        )
+        worker.start()
+        return job_id
+
+    @app.after_request
+    def add_no_cache_headers(response):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
     @app.route('/')
     def home():
         return render_template_string("""
@@ -215,27 +283,39 @@ if FLASK_AVAILABLE:
         <html>
         <head>
             <title>Agentic Protocol Engineering Dashboard</title>
+            <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+            <meta http-equiv="Pragma" content="no-cache" />
+            <meta http-equiv="Expires" content="0" />
             <style>
                 body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
                 .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
                 h1 { color: #333; text-align: center; }
                 .button { background: #007acc; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 10px; text-decoration: none; display: inline-block; }
                 .button:hover { background: #005aa3; }
+                .button:disabled { opacity: 0.6; cursor: not-allowed; }
                 .log-area { background: #f8f8f8; border: 1px solid #ddd; padding: 10px; height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
                 .section { margin: 20px 0; padding: 15px; border: 1px solid #eee; border-radius: 4px; }
+                .status { margin-top: 8px; font-size: 0.9rem; color: #334155; font-weight: 600; }
+                .toast-wrap { position: fixed; right: 20px; top: 20px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
+                .toast { padding: 10px 14px; border-radius: 8px; color: #fff; font-weight: 600; box-shadow: 0 8px 20px rgba(0,0,0,0.2); }
+                .toast.info { background: #2563eb; }
+                .toast.ok { background: #16a34a; }
+                .toast.err { background: #dc2626; }
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>🚀 Agentic Protocol Engineering Dashboard</h1>
                 <p>Welcome to the real-time protocol demonstration system. Click buttons below to run protocol demos and see live logs.</p>
+                <p style="color:#64748b;font-size:0.85rem;">Build timestamp: {{ build_ts }}</p>
                 
                 <div class="section">
                     <h2>Protocol Demonstrations</h2>
-                    <button class="button" onclick="runDemo()">Run Protocol Demo</button>
-                    <button class="button" onclick="runAnalysis()">Analyze Document</button>
-                    <button class="button" onclick="generateSlides()">Generate Slides</button>
-                    <button class="button" onclick="generatePDF()">Generate PDF Report</button>
+                    <button class="button action-btn" onclick="startAction('demo', this)">Run Protocol Demo</button>
+                    <button class="button action-btn" onclick="startAction('analysis', this)">Analyze Document</button>
+                    <button class="button action-btn" onclick="startAction('slides', this)">Generate Slides</button>
+                    <button class="button action-btn" onclick="startAction('pdf', this)">Generate PDF Report</button>
+                    <div id="statusText" class="status">Ready.</div>
                 </div>
                 
                 <div class="section">
@@ -248,75 +328,159 @@ if FLASK_AVAILABLE:
                     <p>Check your workspace for generated files after running operations.</p>
                 </div>
             </div>
+            <div id="toastWrap" class="toast-wrap"></div>
             
             <script>
-                function runDemo() {
-                    fetch('/run_demo')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                        });
+                let activeJobId = null;
+                let pollTimer = null;
+
+                function showToast(message, type = 'info') {
+                    const wrap = document.getElementById('toastWrap');
+                    const node = document.createElement('div');
+                    node.className = `toast ${type}`;
+                    node.textContent = message;
+                    wrap.appendChild(node);
+                    setTimeout(() => node.remove(), 2800);
                 }
-                
-                function runAnalysis() {
-                    fetch('/run_analysis')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                        });
+
+                function setButtonsDisabled(disabled) {
+                    document.querySelectorAll('.action-btn').forEach(btn => btn.disabled = disabled);
                 }
-                
-                function generateSlides() {
-                    fetch('/generate_slides')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                        });
+
+                function clearPoller() {
+                    if (pollTimer) {
+                        clearInterval(pollTimer);
+                        pollTimer = null;
+                    }
                 }
-                
-                function generatePDF() {
-                    fetch('/generate_pdf')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
+
+                async function startAction(action, button) {
+                    if (activeJobId) {
+                        showToast('A script is already running.', 'info');
+                        return;
+                    }
+
+                    const statusText = document.getElementById('statusText');
+                    const logArea = document.getElementById('logArea');
+                    setButtonsDisabled(true);
+                    statusText.textContent = `Starting ${action} script...`;
+                    logArea.textContent = `Submitting ${action} job...`;
+
+                    try {
+                        const res = await fetch(`/api/run/${action}`, {
+                            method: 'POST',
+                            cache: 'no-store',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ source: 'dashboard' })
                         });
+
+                        if (!res.ok) {
+                            throw new Error(`Failed to start job: HTTP ${res.status}`);
+                        }
+
+                        const payload = await res.json();
+                        activeJobId = payload.job_id;
+                        statusText.textContent = `Script started (job ${activeJobId.slice(0, 8)}). Running...`;
+                        showToast('Script started successfully.', 'info');
+
+                        clearPoller();
+                        pollTimer = setInterval(async () => {
+                            try {
+                                const statusRes = await fetch(`/api/status/${activeJobId}`, { cache: 'no-store' });
+                                if (!statusRes.ok) {
+                                    throw new Error(`Status check failed: HTTP ${statusRes.status}`);
+                                }
+
+                                const statusPayload = await statusRes.json();
+                                const st = statusPayload.status;
+                                statusText.textContent = `Job ${statusPayload.id.slice(0, 8)}: ${st}`;
+
+                                if (st === 'completed') {
+                                    clearPoller();
+                                    logArea.textContent = statusPayload.output || 'Completed with no output.';
+                                    statusText.textContent = 'Completed successfully.';
+                                    showToast('Script completed.', 'ok');
+                                    activeJobId = null;
+                                    setButtonsDisabled(false);
+                                } else if (st === 'failed') {
+                                    clearPoller();
+                                    logArea.textContent = `Script failed:\n${statusPayload.error || 'Unknown error'}`;
+                                    statusText.textContent = 'Failed.';
+                                    showToast('Script failed.', 'err');
+                                    activeJobId = null;
+                                    setButtonsDisabled(false);
+                                }
+                            } catch (pollErr) {
+                                clearPoller();
+                                logArea.textContent = `Error while polling job status:\n${String(pollErr)}`;
+                                statusText.textContent = 'Polling interrupted.';
+                                showToast('Polling interrupted.', 'err');
+                                activeJobId = null;
+                                setButtonsDisabled(false);
+                            }
+                        }, 800);
+                    } catch (startErr) {
+                        activeJobId = null;
+                        setButtonsDisabled(false);
+                        statusText.textContent = 'Failed to start script.';
+                        logArea.textContent = `Could not start action ${action}:\n${String(startErr)}`;
+                        showToast('Failed to start script.', 'err');
+                    }
                 }
             </script>
         </body>
         </html>
-        """)
+        """, build_ts=datetime.now().isoformat(timespec="seconds"))
 
+    @app.route('/favicon.ico')
+    def favicon():
+        return '', 204
+
+    @app.route('/api/run/<action>', methods=['POST'])
+    def api_run_action(action: str):
+        action_map = {
+            'demo': (demo_protocols, [], {}),
+            'analysis': (analyze_document, ["Agentic_Protocol_Slide.md"], {}),
+            'slides': (generate_slides, [], {}),
+            'pdf': (generate_pdf, [], {}),
+        }
+
+        if action not in action_map:
+            return jsonify({'error': f'Unknown action: {action}'}), 404
+
+        callable_fn, args, kwargs = action_map[action]
+        job_id = _create_job(action, callable_fn, *args, **kwargs)
+        return jsonify({'job_id': job_id, 'status': 'queued', 'action': action}), 202
+
+    @app.route('/api/status/<job_id>', methods=['GET'])
+    def api_job_status(job_id: str):
+        with JOB_LOCK:
+            job = JOBS.get(job_id)
+
+        if not job:
+            return jsonify({'error': 'Job not found', 'job_id': job_id}), 404
+
+        return jsonify(job)
+
+    # Backward compatibility routes
     @app.route('/run_demo')
-    def run_demo():
-        # Capture stdout
-        f = io.StringIO()
-        with contextlib.redirect_stdout(f):
-            demo_protocols()
-        output = f.getvalue()
+    def web_run_demo():
+        output = _capture_output(demo_protocols)
         return jsonify({'output': output})
 
     @app.route('/run_analysis')
-    def run_analysis():
-        f = io.StringIO()
-        with contextlib.redirect_stdout(f):
-            analyze_document("Agentic_Protocol_Slide.md")
-        output = f.getvalue()
+    def web_run_analysis():
+        output = _capture_output(analyze_document, "Agentic_Protocol_Slide.md")
         return jsonify({'output': output})
 
     @app.route('/generate_slides')
-    def generate_slides():
-        f = io.StringIO()
-        with contextlib.redirect_stdout(f):
-            generate_slides()
-        output = f.getvalue()
+    def web_generate_slides():
+        output = _capture_output(generate_slides)
         return jsonify({'output': output})
 
     @app.route('/generate_pdf')
-    def generate_pdf():
-        f = io.StringIO()
-        with contextlib.redirect_stdout(f):
-            generate_pdf()
-        output = f.getvalue()
+    def web_generate_pdf():
+        output = _capture_output(generate_pdf)
         return jsonify({'output': output})
 
 def read_file_with_provenance(file_path: str) -> RetrievalProvenance:
@@ -772,7 +936,12 @@ if __name__ == "__main__":
 
     # Analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze a document")
-    analyze_parser.add_argument("file_path", help="Path to file to analyze")
+    analyze_parser.add_argument(
+        "file_path",
+        nargs="?",
+        default="Agentic_Protocol_Slide.md",
+        help="Path to file to analyze (defaults to Agentic_Protocol_Slide.md)"
+    )
 
     # Generate commands
     generate_parser = subparsers.add_parser("generate", help="Generate content")
@@ -799,13 +968,15 @@ if __name__ == "__main__":
             generate_slides(args.topic)
         elif args.content_type == "pdf":
             generate_pdf(args.topic)
+        else:
+            generate_parser.print_help()
     elif args.command == "demo":
         demo_protocols()
     elif args.command == "web":
         if FLASK_AVAILABLE:
             print("🌐 Starting web interface at http://localhost:5000")
             print("Open your browser and navigate to the URL above.")
-            app.run(debug=True, host='0.0.0.0', port=5000)
+            app.run(debug=False, host='0.0.0.0', port=5000, use_reloader=False, threaded=True)
         else:
             print("❌ Flask not available. Install with: pip install flask")
     else:
