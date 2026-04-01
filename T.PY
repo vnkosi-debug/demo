@@ -31,11 +31,21 @@ import io
 import contextlib
 
 try:
-    from flask import Flask, render_template_string, request, jsonify
+    from flask import Flask, render_template_string, request, jsonify, send_from_directory
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
     print("Flask not available. Install with: pip install flask")
+
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.lib.units import inch
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    print("ReportLab not available. Install with: pip install reportlab")
 
 class ProtocolBase:
     """Base class for all protocols with common validation and serialization."""
@@ -245,7 +255,9 @@ if FLASK_AVAILABLE:
                 
                 <div class="section">
                     <h2>Generated Files</h2>
-                    <p>Check your workspace for generated files after running operations.</p>
+                    <div id="fileList">
+                        <p>No files generated yet. Click a button above to create content.</p>
+                    </div>
                 </div>
             </div>
             
@@ -255,6 +267,7 @@ if FLASK_AVAILABLE:
                         .then(response => response.json())
                         .then(data => {
                             document.getElementById('logArea').textContent = data.output;
+                            updateFileList(data.files);
                         });
                 }
                 
@@ -263,6 +276,7 @@ if FLASK_AVAILABLE:
                         .then(response => response.json())
                         .then(data => {
                             document.getElementById('logArea').textContent = data.output;
+                            updateFileList(data.files);
                         });
                 }
                 
@@ -271,6 +285,7 @@ if FLASK_AVAILABLE:
                         .then(response => response.json())
                         .then(data => {
                             document.getElementById('logArea').textContent = data.output;
+                            updateFileList(data.files);
                         });
                 }
                 
@@ -279,7 +294,23 @@ if FLASK_AVAILABLE:
                         .then(response => response.json())
                         .then(data => {
                             document.getElementById('logArea').textContent = data.output;
+                            updateFileList(data.files);
                         });
+                }
+                
+                function updateFileList(files) {
+                    const fileList = document.getElementById('fileList');
+                    if (files.length === 0) {
+                        fileList.innerHTML = '<p>No files generated.</p>';
+                        return;
+                    }
+                    
+                    let html = '<p>Generated files:</p><ul>';
+                    files.forEach(file => {
+                        html += `<li><a href="/files/${file}" target="_blank">${file}</a></li>`;
+                    });
+                    html += '</ul>';
+                    fileList.innerHTML = html;
                 }
             </script>
         </body>
@@ -293,31 +324,40 @@ if FLASK_AVAILABLE:
         with contextlib.redirect_stdout(f):
             demo_protocols()
         output = f.getvalue()
-        return jsonify({'output': output})
+        return jsonify({'output': output, 'files': []})
 
     @app.route('/run_analysis')
     def run_analysis():
         f = io.StringIO()
         with contextlib.redirect_stdout(f):
-            analyze_document("Agentic_Protocol_Slide.md")
+            result = analyze_document("Agentic_Protocol_Slide.md")
         output = f.getvalue()
-        return jsonify({'output': output})
+        files = []
+        if result:
+            files.append(f"analysis_Agentic_Protocol_Slide.json")
+        return jsonify({'output': output, 'files': files})
 
     @app.route('/generate_slides')
-    def generate_slides():
+    def generate_slides_route():
         f = io.StringIO()
         with contextlib.redirect_stdout(f):
             generate_slides()
         output = f.getvalue()
-        return jsonify({'output': output})
+        files = ["agentic_protocol_engineering_presentation.md", "agentic_protocol_engineering_presentation.pptx"]
+        return jsonify({'output': output, 'files': files})
 
     @app.route('/generate_pdf')
-    def generate_pdf():
+    def generate_pdf_route():
         f = io.StringIO()
         with contextlib.redirect_stdout(f):
             generate_pdf()
         output = f.getvalue()
-        return jsonify({'output': output})
+        files = ["protocol_analysis_report_report.pdf"]
+        return jsonify({'output': output, 'files': files})
+
+    @app.route('/files/<filename>')
+    def serve_file(filename):
+        return send_from_directory('.', filename)
 
 def read_file_with_provenance(file_path: str) -> RetrievalProvenance:
     """Read a file and create a RetrievalProvenance object."""
@@ -588,8 +628,10 @@ def create_pdf_report(content_agent: Agent, analysis_results: Dict[str, Any], ou
     """Create PDF report from analysis results."""
     print(f"📄 Creating PDF report: {output_file}")
 
-    # Create a simple text-based report (in real implementation, use reportlab)
-    content = f"""PROTOCOL-DRIVEN ANALYSIS REPORT
+    if not REPORTLAB_AVAILABLE:
+        print("❌ ReportLab not available, creating text file instead")
+        # Fallback to text file
+        content = f"""PROTOCOL-DRIVEN ANALYSIS REPORT
 {'='*50}
 
 Topic: {analysis_results.get('topic', 'Protocol Analysis')}
@@ -616,12 +658,81 @@ All content maintains cryptographic signatures and audit trails.
 {'='*50}
 Generated by Protocol-Driven Content Generation System
 """
+        with open(output_file.replace('.pdf', '.txt'), 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"✅ Report content saved as: {output_file.replace('.pdf', '.txt')}")
+        return
 
-    # Save as text file (can be converted to PDF)
-    with open(output_file.replace('.pdf', '.txt'), 'w', encoding='utf-8') as f:
-        f.write(content)
+    # Create PDF using ReportLab
+    doc = SimpleDocTemplate(output_file, pagesize=letter)
+    styles = getSampleStyleSheet()
 
-    print(f"✅ Report content saved as: {output_file.replace('.pdf', '.txt')}")
+    # Create custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        spaceAfter=30,
+        alignment=1  # Center
+    )
+
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        spaceAfter=20,
+    )
+
+    normal_style = styles['Normal']
+
+    # Build the PDF content
+    story = []
+
+    # Title
+    story.append(Paragraph("PROTOCOL-DRIVEN ANALYSIS REPORT", title_style))
+    story.append(Spacer(1, 12))
+
+    # Topic and generation info
+    topic = analysis_results.get('topic', 'Protocol Analysis')
+    generated_at = analysis_results.get('generated_at', datetime.now().isoformat())
+
+    story.append(Paragraph(f"<b>Topic:</b> {topic}", normal_style))
+    story.append(Paragraph(f"<b>Generated:</b> {generated_at}", normal_style))
+    story.append(Spacer(1, 20))
+
+    # Protocols Demonstrated
+    story.append(Paragraph("PROTOCOLS DEMONSTRATED", heading_style))
+    protocols = analysis_results.get('protocols_demonstrated', [])
+    for protocol in protocols:
+        story.append(Paragraph(f"• {protocol}", normal_style))
+    story.append(Spacer(1, 20))
+
+    # Key Findings
+    story.append(Paragraph("KEY FINDINGS", heading_style))
+    findings = analysis_results.get('key_findings', [])
+    for finding in findings:
+        story.append(Paragraph(f"• {finding}", normal_style))
+    story.append(Spacer(1, 20))
+
+    # Analysis Methodology
+    story.append(Paragraph("ANALYSIS METHODOLOGY", heading_style))
+    methodology_text = """This report was generated using agentic protocols that ensure:
+• Data provenance and trust tracking
+• Structured inter-agent communication
+• Context stability and versioning
+• Safe execution environments
+
+All content maintains cryptographic signatures and audit trails."""
+    story.append(Paragraph(methodology_text, normal_style))
+    story.append(Spacer(1, 20))
+
+    # Footer
+    footer_text = "Generated by Protocol-Driven Content Generation System"
+    story.append(Paragraph(footer_text, ParagraphStyle('Footer', parent=normal_style, alignment=1)))
+
+    # Build the PDF
+    doc.build(story)
+    print(f"✅ PDF report created: {output_file}")
 
 def analyze_document(file_path: str):
     """Real document analysis using protocols."""
