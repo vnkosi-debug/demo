@@ -19,6 +19,8 @@ python T.PY demo                  # Run the protocol demonstration
 python T.PY web                   # Start web interface
 """
 
+from __future__ import annotations
+
 import json
 import time
 import os
@@ -136,7 +138,7 @@ class Agent:
         self.name = name
         self.memory: Dict[str, Any] = {}
 
-    def send_message(self, receiver: Agent, msg_type: str, payload: Dict[str, Any],
+    def send_message(self, receiver: 'Agent', msg_type: str, payload: Dict[str, Any],
                     session_id: str = "session_001") -> ACPMessage:
         """Send a structured message using ACP."""
         message = ACPMessage(
@@ -148,7 +150,7 @@ class Agent:
             payload=payload
         )
         if message.validate():
-            print(f"📤 {self.name} → {receiver.name}: {msg_type}")
+            print(f"[SEND] {self.name} -> {receiver.name}: {msg_type}")
             print(message.to_json())
             receiver.receive_message(message)
             return message
@@ -158,10 +160,10 @@ class Agent:
     def receive_message(self, message: ACPMessage):
         """Process incoming ACP message."""
         if not message.validate():
-            print(f"❌ {self.name} rejected invalid message")
+            print(f"[REJECTED] {self.name} rejected invalid message")
             return
 
-        print(f"📥 {self.name} received: {message.type}")
+        print(f"[RECEIVE] {self.name} received: {message.type}")
         # Process based on message type
         if message.type == "task_request":
             self.handle_task_request(message.payload)
@@ -180,12 +182,12 @@ class Agent:
         )
 
         if sandbox.validate():
-            print(f"🔒 {self.name} executing {tool} in {sandbox.execution_class} mode")
+            print(f"[SANDBOX] {self.name} executing {tool} in {sandbox.execution_class} mode")
             # Simulate execution
             result = f"Executed {tool} successfully"
             self.memory["last_result"] = result
         else:
-            print(f"🚫 {self.name} rejected unsafe tool execution")
+            print(f"[BLOCKED] {self.name} rejected unsafe tool execution")
 
     def handle_context_update(self, payload: Dict[str, Any]):
         """Handle context update with MCP."""
@@ -198,16 +200,16 @@ class Agent:
             context.add_slot(slot["slot"], slot["content"])
 
         if context.validate():
-            print(f"🧠 {self.name} updated context: {context.context_id}")
+            print(f"[CONTEXT] {self.name} updated context: {context.context_id}")
             self.memory["current_context"] = context
         else:
-            print(f"❌ {self.name} rejected invalid context")
+            print(f"[REJECTED] {self.name} rejected invalid context")
 
     def handle_summarize_request(self, payload: Dict[str, Any]):
         """Handle summarization request."""
         content = payload.get("content", "")
         summary = self.summarize_text(content)
-        print(f"📝 {self.name} summarized content: {summary[:100]}...")
+        print(f"[SUMMARY] {self.name} summarized content: {summary[:100]}...")
         self.memory["last_summary"] = summary
 
     def summarize_text(self, text: str) -> str:
@@ -234,77 +236,273 @@ if FLASK_AVAILABLE:
         <html>
         <head>
             <title>Agentic Protocol Engineering Dashboard</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400&family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
             <style>
-                body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-                .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                h1 { color: #333; text-align: center; }
-                .button { background: #007acc; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 10px; text-decoration: none; display: inline-block; }
-                .button:hover { background: #005aa3; }
-                .log-area { background: #f8f8f8; border: 1px solid #ddd; padding: 10px; height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
-                .section { margin: 20px 0; padding: 15px; border: 1px solid #eee; border-radius: 4px; }
+                :root {
+                    --green: #86BC25;
+                    --green-dark: #4B7A0E;
+                    --green-pale: #EEF7E5;
+                    --black: #0A0A0A;
+                    --dark: #141414;
+                    --mid: #1E1E1E;
+                    --card-dark: #252525;
+                    --white: #FFFFFF;
+                    --off-white: #F5F5F0;
+                    --slate: #4A4A4A;
+                    --muted: #888888;
+                    --ok: #16a34a;
+                    --err: #dc2626;
+                }
+                *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+                body {
+                    font-family: 'DM Sans', sans-serif;
+                    background: #0d0d0d;
+                    color: var(--white);
+                    overflow-x: hidden;
+                }
+                .nav {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    z-index: 100;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 0 2rem;
+                    height: 52px;
+                    background: rgba(10,10,10,0.92);
+                    backdrop-filter: blur(12px);
+                    border-bottom: 1px solid rgba(134,188,37,0.2);
+                }
+                .nav-logo {
+                    font-family: 'DM Serif Display', serif;
+                    font-size: 1.1rem;
+                    color: var(--white);
+                    letter-spacing: 0.02em;
+                }
+                .nav-logo span { color: var(--green); }
+                .main {
+                    max-width: 1200px;
+                    margin: 80px auto 24px;
+                    padding: 0 16px;
+                }
+                .panel {
+                    background: var(--off-white);
+                    color: var(--black);
+                    border-radius: 10px;
+                    box-shadow: 0 14px 40px rgba(0,0,0,0.25);
+                    overflow: hidden;
+                }
+                .top-bar { height: 4px; background: var(--green); }
+                .content { padding: 24px; }
+                h1 {
+                    font-family: 'DM Serif Display', serif;
+                    font-size: 2rem;
+                    color: var(--black);
+                    margin-bottom: 8px;
+                }
+                .subtitle {
+                    color: var(--slate);
+                    font-size: 0.95rem;
+                    margin-bottom: 16px;
+                }
+                .section {
+                    margin: 14px 0;
+                    padding: 14px;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 8px;
+                    background: var(--white);
+                }
+                .section h2 {
+                    font-size: 0.95rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.08em;
+                    margin-bottom: 10px;
+                    color: var(--green-dark);
+                }
+                .flow {
+                    display: grid;
+                    grid-template-columns: repeat(4, minmax(0, 1fr));
+                    gap: 10px;
+                }
+                .flow-card {
+                    background: #f9fbf5;
+                    border-left: 4px solid var(--green);
+                    padding: 10px;
+                    font-size: 0.82rem;
+                    color: var(--slate);
+                }
+                .flow-card strong {
+                    display: block;
+                    margin-bottom: 4px;
+                    color: var(--black);
+                    font-size: 0.86rem;
+                }
+                .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+                .button {
+                    background: var(--green);
+                    color: var(--white);
+                    border: none;
+                    border-radius: 6px;
+                    padding: 10px 14px;
+                    cursor: pointer;
+                    font-weight: 700;
+                    font-size: 0.83rem;
+                    letter-spacing: 0.02em;
+                    transition: all 0.2s;
+                }
+                .button:hover { background: var(--green-dark); transform: translateY(-1px); }
+                .button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+                .status { margin-top: 10px; font-size: 0.86rem; color: var(--slate); }
+                .status.ok { color: var(--ok); }
+                .status.error { color: var(--err); }
+                .log-area {
+                    background: #111827;
+                    border: 1px solid #1f2937;
+                    color: #e2e8f0;
+                    padding: 12px;
+                    height: 360px;
+                    overflow-y: auto;
+                    font-family: 'JetBrains Mono', monospace;
+                    white-space: pre-wrap;
+                    font-size: 0.79rem;
+                    line-height: 1.5;
+                }
+                #fileList ul { margin-left: 18px; }
+                #fileList a { color: var(--green-dark); text-decoration: none; }
+                #fileList a:hover { text-decoration: underline; }
+                .toast-wrap {
+                    position: fixed;
+                    right: 18px;
+                    top: 68px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                    z-index: 200;
+                }
+                .toast {
+                    background: #1f2937;
+                    color: #fff;
+                    border-left: 4px solid var(--green);
+                    padding: 10px 12px;
+                    font-size: 0.82rem;
+                    min-width: 220px;
+                    box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+                }
+                @media (max-width: 900px) {
+                    .flow { grid-template-columns: 1fr 1fr; }
+                }
+                @media (max-width: 600px) {
+                    .flow { grid-template-columns: 1fr; }
+                    .nav { padding: 0 1rem; }
+                    .content { padding: 16px; }
+                }
             </style>
         </head>
         <body>
-            <div class="container">
-                <h1>🚀 Agentic Protocol Engineering Dashboard</h1>
-                <p>Welcome to the real-time protocol demonstration system. Click buttons below to run protocol demos and see live logs.</p>
-                
+            <div class="nav">
+                <div class="nav-logo"><span>Deloitte</span> × AWS Agentic AI</div>
+                <div style="font-size:0.75rem;color:var(--muted);">Demo Console</div>
+            </div>
+
+            <div class="main">
+            <div class="panel">
+                <div class="top-bar"></div>
+                <div class="content">
+                <h1>Agentic Protocol Engineering Dashboard</h1>
+                <p class="subtitle">Operational walkthrough of provenance, context packaging, agent communication, and governed execution.</p>
+
                 <div class="section">
-                    <h2>Protocol Demonstrations</h2>
-                    <button class="button" onclick="runDemo()">Run Protocol Demo</button>
-                    <button class="button" onclick="runAnalysis()">Analyze Document</button>
-                    <button class="button" onclick="generateSlides()">Generate Slides</button>
-                    <button class="button" onclick="generatePDF()">Generate PDF Report</button>
-                </div>
-                
-                <div class="section">
-                    <h2>Live Logs</h2>
-                    <div id="logArea" class="log-area">Click a button above to start seeing protocol logs in real-time...</div>
-                </div>
-                
-                <div class="section">
-                    <h2>Generated Files</h2>
-                    <div id="fileList">
-                        <p>No files generated yet. Click a button above to create content.</p>
+                    <h2>Protocol flow</h2>
+                    <div class="flow">
+                        <div class="flow-card"><strong>1) Provenance</strong>Source metadata and trust evidence are attached before use.</div>
+                        <div class="flow-card"><strong>2) MCP Context</strong>Context is packaged into stable, versioned slots.</div>
+                        <div class="flow-card"><strong>3) ACP Messaging</strong>Agent interactions use traceable message envelopes.</div>
+                        <div class="flow-card"><strong>4) Sandbox</strong>Tools execute with explicit safety constraints.</div>
                     </div>
                 </div>
+                
+                <div class="section">
+                    <h2>Run operations</h2>
+                    <div class="actions">
+                        <button class="button action-button" onclick="runAction('/run_demo', this)">Run protocol demo</button>
+                        <button class="button action-button" onclick="runAction('/run_analysis', this)">Analyze document</button>
+                        <button class="button action-button" onclick="runAction('/generate_slides', this)">Generate slides</button>
+                        <button class="button action-button" onclick="runAction('/generate_pdf', this)">Generate PDF report</button>
+                    </div>
+                    <p id="status" class="status">Ready.</p>
+                </div>
+                
+                <div class="section">
+                    <h2>Execution log</h2>
+                    <div id="logArea" class="log-area">Select an operation to view execution logs.</div>
+                </div>
+                
+                <div class="section">
+                    <h2>Generated files</h2>
+                    <div id="fileList">
+                        <p>No files generated yet.</p>
+                    </div>
+                </div>
+                </div>
             </div>
+            </div>
+            <div id="toastWrap" class="toast-wrap"></div>
             
             <script>
-                function runDemo() {
-                    fetch('/run_demo')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                            updateFileList(data.files);
-                        });
+                let isRunning = false;
+
+                function showToast(message) {
+                    const wrap = document.getElementById('toastWrap');
+                    const toast = document.createElement('div');
+                    toast.className = 'toast';
+                    toast.textContent = message;
+                    wrap.appendChild(toast);
+                    setTimeout(() => toast.remove(), 2600);
                 }
-                
-                function runAnalysis() {
-                    fetch('/run_analysis')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                            updateFileList(data.files);
-                        });
+
+                function setButtons(disabled) {
+                    document.querySelectorAll('.action-button').forEach(btn => btn.disabled = disabled);
                 }
-                
-                function generateSlides() {
-                    fetch('/generate_slides')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                            updateFileList(data.files);
-                        });
-                }
-                
-                function generatePDF() {
-                    fetch('/generate_pdf')
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('logArea').textContent = data.output;
-                            updateFileList(data.files);
-                        });
+
+                async function runAction(path, button) {
+                    if (isRunning) {
+                        showToast('A script is already running.');
+                        return;
+                    }
+
+                    const status = document.getElementById('status');
+                    const logArea = document.getElementById('logArea');
+                    isRunning = true;
+                    setButtons(true);
+                    button.disabled = true;
+                    status.className = 'status';
+                    status.textContent = 'Script started. Running...';
+                    showToast('Script started.');
+
+                    try {
+                        const response = await fetch(path, { cache: 'no-store' });
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        const data = await response.json();
+                        logArea.textContent = data.output || 'No output returned.';
+                        updateFileList(data.files || []);
+                        status.className = 'status ok';
+                        status.textContent = 'Completed successfully.';
+                        showToast('Execution completed.');
+                    } catch (error) {
+                        logArea.textContent = `Execution failed:\n${String(error)}`;
+                        status.className = 'status error';
+                        status.textContent = 'Execution failed.';
+                        showToast('Execution failed.');
+                    } finally {
+                        isRunning = false;
+                        setButtons(false);
+                    }
                 }
                 
                 function updateFileList(files) {
@@ -384,9 +582,9 @@ def read_file_with_provenance(file_path: str) -> RetrievalProvenance:
 
 def demo_protocols(file_path: str = None):
     """Run a demonstration of the protocols in action."""
-    print("🚀 Starting Agentic Protocol Engineering Demo")
+    print("Starting Agentic Protocol Engineering Demonstration")
     print("=" * 50)
-    print("\n🎯 Goal: Show how protocols prevent 'trust bleeding' in agent systems")
+    print("\nGoal: demonstrate how protocols prevent trust leakage in agent systems")
     time.sleep(2)
 
     # Create agents
@@ -394,7 +592,7 @@ def demo_protocols(file_path: str = None):
     content_agent = Agent("ContentWriter")
 
     # Demo 1: Retrieval with Provenance
-    print("\n📚 Demo 1: Retrieval Provenance Protocol")
+    print("\nDemo 1: Retrieval Provenance Protocol")
     print("   → Ensures data comes with evidence and trust scores")
     doc = RetrievalProvenance(
         document_id="doc_123",
@@ -403,22 +601,22 @@ def demo_protocols(file_path: str = None):
     )
     print("Retrieved document with provenance:")
     print(doc.to_json())
-    print("💡 Remember: Every piece of data needs provenance!")
+    print("Note: every piece of data should include provenance metadata.")
     time.sleep(3)
 
     # Demo 2: Context Packaging with MCP
-    print("\n🧩 Demo 2: Model Context Protocol")
+    print("\nDemo 2: Model Context Protocol")
     print("   → Packages context in stable, versioned slots")
     context = MCPContext("ctx_456", "1.1")
     context.add_slot("retrieved_knowledge", doc.content)
     context.add_slot("current_task", "Prepare safety review summary")
     print("Packaged context:")
     print(context.to_json())
-    print("💡 Remember: MCP = Model Context Protocol (stable context)")
+    print("Note: MCP provides stable and versioned context packaging.")
     time.sleep(3)
 
     # Demo 3: Agent Communication with ACP
-    print("\n💬 Demo 3: Agent Communication Protocol")
+    print("\nDemo 3: Agent Communication Protocol")
     print("   → Structured messaging between agents")
     research_agent.send_message(
         content_agent,
@@ -429,11 +627,11 @@ def demo_protocols(file_path: str = None):
             "context_slots": context.context_slots
         }
     )
-    print("💡 Remember: ACP = Agent Communication Protocol (structured messages)")
+    print("Note: ACP ensures structured and traceable message exchanges.")
     time.sleep(3)
 
     # Demo 4: Task Execution with Sandbox Protocol
-    print("\n🔒 Demo 4: Sandbox Protocol for Safe Execution")
+    print("\nDemo 4: Sandbox Protocol for Safe Execution")
     print("   → Governs tool execution with safety classes")
     research_agent.send_message(
         content_agent,
@@ -447,11 +645,11 @@ def demo_protocols(file_path: str = None):
             }
         }
     )
-    print("💡 Remember: Sandbox prevents unsafe tool execution!")
+    print("Note: sandbox controls prevent unsafe tool execution.")
     time.sleep(2)
 
     # Real Implementation: Document Analysis Task
-    print("\n🛠️  Real Implementation: Document Analysis with Protocols")
+    print("\nReal Implementation: Document Analysis with Protocols")
     print("   → Agents collaborate to analyze and summarize a document")
     
     # Determine file to analyze
@@ -462,7 +660,7 @@ def demo_protocols(file_path: str = None):
     
     try:
         # Step 1: Retrieve document with provenance
-        print(f"\n📖 Reading document: {target_file}")
+        print(f"\nReading document: {target_file}")
         doc_provenance = read_file_with_provenance(target_file)
         print("Document retrieved with provenance:")
         print(f"   Origin: {doc_provenance.origin}")
@@ -504,7 +702,7 @@ def demo_protocols(file_path: str = None):
         # Step 5: Output the result
         if "last_summary" in content_agent.memory:
             summary = content_agent.memory["last_summary"]
-            print("\n📋 Final Summary Generated by Agents:")
+            print("\nFinal summary generated by agents:")
             print("=" * 50)
             print(summary)
             print("=" * 50)
@@ -517,16 +715,16 @@ def demo_protocols(file_path: str = None):
                 f.write(summary)
                 f.write("\n" + "=" * 50 + "\n")
                 f.write("Generated using Agentic Protocols: MCP, ACP, Provenance, Sandbox")
-            print(f"\n💾 Summary saved to: {output_file}")
+            print(f"\nSummary saved to: {output_file}")
         else:
-            print("\n❌ Summary generation failed")
+            print("\nSummary generation failed")
             
     except FileNotFoundError as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         print("Please provide a valid file path or ensure Agentic_Protocol_Slide.md exists.")
     
-    print("\n✅ Demo completed! Protocols ensure trust and structure in agent interactions.")
-    print("\n🔑 Key Takeaways to Remember:")
+    print("\nDemonstration completed. Protocol boundaries ensure trust and structure in agent interactions.")
+    print("\nKey takeaways:")
     print("   • MCP: Context packaging (stable, versioned)")
     print("   • ACP: Agent messaging (structured, validated)")
     print("   • Provenance: Data evidence (trust scores, signatures)")
@@ -552,12 +750,12 @@ def generate_slide_content(content_agent: Agent, topic: str, context: MCPContext
     )
 
     if sandbox.validate():
-        print(f"🔒 {content_agent.name} generating slides for: {topic}")
+        print(f"[SANDBOX] {content_agent.name} generating slides for: {topic}")
 
         # Generate sample slide content
         slides = {
             "title_slide": {
-                "title": f"🚀 {topic}",
+                "title": f"{topic}",
                 "subtitle": "Generated using Agentic Protocols",
                 "content": "Trust-maintained content generation"
             },
@@ -588,10 +786,10 @@ def generate_slide_content(content_agent: Agent, topic: str, context: MCPContext
 
 def create_presentation_from_protocols(slides: Dict[str, Any], output_file: str):
     """Create actual PPTX presentation using the generated content."""
-    print(f"📊 Creating presentation: {output_file}")
+    print(f"Creating presentation: {output_file}")
 
     if not PPTX_AVAILABLE:
-        print("❌ python-pptx not available, creating markdown file instead")
+        print("python-pptx not available, creating markdown file instead")
         # Fallback to markdown
         content = f"""# {slides['title_slide']['title']}
 
@@ -629,7 +827,7 @@ Generated at: {datetime.now().isoformat()}
 """
         with open(output_file.replace('.pptx', '.md'), 'w', encoding='utf-8') as f:
             f.write(content)
-        print(f"✅ Presentation content saved as: {output_file.replace('.pptx', '.md')}")
+        print(f"Presentation content saved as: {output_file.replace('.pptx', '.md')}")
         return
 
     # Create presentation
@@ -679,14 +877,14 @@ Generated at: {datetime.now().isoformat()}
 
     # Save the presentation
     prs.save(output_file)
-    print(f"✅ PowerPoint presentation saved as: {output_file}")
+    print(f"PowerPoint presentation saved as: {output_file}")
 
 def create_pdf_report(content_agent: Agent, analysis_results: Dict[str, Any], output_file: str):
     """Create PDF report from analysis results."""
-    print(f"📄 Creating PDF report: {output_file}")
+    print(f"Creating PDF report: {output_file}")
 
     if not REPORTLAB_AVAILABLE:
-        print("❌ ReportLab not available, creating text file instead")
+        print("ReportLab not available, creating text file instead")
         # Fallback to text file
         content = f"""PROTOCOL-DRIVEN ANALYSIS REPORT
 {'='*50}
@@ -717,7 +915,7 @@ Generated by Protocol-Driven Content Generation System
 """
         with open(output_file.replace('.pdf', '.txt'), 'w', encoding='utf-8') as f:
             f.write(content)
-        print(f"✅ Report content saved as: {output_file.replace('.pdf', '.txt')}")
+        print(f"Report content saved as: {output_file.replace('.pdf', '.txt')}")
         return
 
     # Create PDF using ReportLab
@@ -789,11 +987,11 @@ All content maintains cryptographic signatures and audit trails."""
 
     # Build the PDF
     doc.build(story)
-    print(f"✅ PDF report created: {output_file}")
+    print(f"PDF report created: {output_file}")
 
 def analyze_document(file_path: str):
     """Real document analysis using protocols."""
-    print("🔍 Starting Protocol-Based Document Analysis")
+    print("Starting protocol-based document analysis")
     print("=" * 50)
 
     # Create agents
@@ -803,7 +1001,7 @@ def analyze_document(file_path: str):
 
     try:
         # Step 1: Retrieve document with provenance
-        print(f"\n📖 Reading document: {file_path}")
+        print(f"\nReading document: {file_path}")
         doc_provenance = read_file_with_provenance(file_path)
         print("Document retrieved with provenance:")
         print(f"   Origin: {doc_provenance.origin}")
@@ -871,20 +1069,20 @@ def analyze_document(file_path: str):
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(analysis_results, f, indent=2, default=str)
 
-        print(f"\n💾 Analysis results saved to: {output_file}")
-        print("\n📋 Analysis Summary:")
+        print(f"\nAnalysis results saved to: {output_file}")
+        print("\nAnalysis summary:")
         print("=" * 30)
         print(analysis_results["summary"])
 
         return analysis_results
 
     except FileNotFoundError as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         return None
 
 def generate_slides(topic: str = "Agentic Protocol Engineering"):
     """Generate presentation slides using protocols."""
-    print("🎨 Starting Protocol-Based Slide Generation")
+    print("Starting protocol-based slide generation")
     print("=" * 50)
 
     # Create agents
@@ -904,11 +1102,11 @@ def generate_slides(topic: str = "Agentic Protocol Engineering"):
     output_file = f"{topic.lower().replace(' ', '_')}_presentation.pptx"
     create_presentation_from_protocols(slides, output_file)
 
-    print(f"\n✅ Slides generated and saved as: {output_file}")
+    print(f"\nSlides generated and saved as: {output_file}")
 
 def generate_pdf(topic: str = "Protocol Analysis Report"):
     """Generate PDF report using protocols."""
-    print("📄 Starting Protocol-Based PDF Generation")
+    print("Starting protocol-based PDF generation")
     print("=" * 50)
 
     # Create agents
@@ -932,7 +1130,7 @@ def generate_pdf(topic: str = "Protocol Analysis Report"):
     output_file = f"{topic.lower().replace(' ', '_')}_report.pdf"
     create_pdf_report(content_agent, analysis_results, output_file)
 
-    print(f"\n✅ PDF report generated and saved as: {output_file}")
+    print(f"\nPDF report generated and saved as: {output_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Protocol-Driven Content Generation System")
@@ -971,10 +1169,10 @@ if __name__ == "__main__":
         demo_protocols()
     elif args.command == "web":
         if FLASK_AVAILABLE:
-            print("🌐 Starting web interface at http://localhost:5000")
+            print("Starting web interface at http://localhost:5000")
             print("Open your browser and navigate to the URL above.")
-            app.run(debug=True, host='0.0.0.0', port=5000)
+            app.run(debug=False, host='0.0.0.0', port=5000, use_reloader=False, threaded=True)
         else:
-            print("❌ Flask not available. Install with: pip install flask")
+            print("Flask not available. Install with: pip install flask")
     else:
         parser.print_help()
